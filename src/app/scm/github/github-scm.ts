@@ -70,20 +70,26 @@ export class GitHubScm implements common.Scm {
 
     private convertWebHookEvent(eventType: string, eventData): common.ScmEvent {
         if (eventType === 'push') {
+            const creds = this.getCredsByRepoUrl(eventData.repository.clone_url);
             return {
                 type: 'push',
                 commit: {
                     repo: { cloneUrl: eventData.repository.clone_url, fullName: eventData.repository.full_name },
                     sha: eventData.head_commit.id,
+                    branch: eventData.ref,
+                    creds: creds,
                 },
                 repo: { cloneUrl: eventData.repository.clone_url, fullName: eventData.repository.full_name },
             };
         } else if (eventType === 'pull_request') {
+            const creds = this.getCredsByRepoUrl(eventData.repository.clone_url);
             return {
                 type: 'pull_request',
                 commit: {
                     repo: { cloneUrl: eventData.pull_request.head.repo.clone_url, fullName: eventData.pull_request.head.repo.full_name },
                     sha: eventData.pull_request.head.sha,
+                    branch: eventData.ref,
+                    creds: creds,
                 },
                 repo: { cloneUrl: eventData.pull_request.base.repo.clone_url, fullName: eventData.pull_request.base.repo.full_name },
             };

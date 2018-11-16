@@ -35,11 +35,12 @@ export class CiProcessor {
     }
 
     public async doProcessGitEvent(scm: common.Scm, scmEvent: common.ScmEvent) {
-        const ciWorkflow = await this.asyncLock(scmEvent.commit.repo.cloneUrl, () => this.loadCiWorkflow(scmEvent.commit.repo.cloneUrl, scmEvent.commit.sha));
+        const ciWorkflow = await this.asyncLock(scmEvent.commit.repo.cloneUrl, () => this.loadCiWorkflow(scmEvent.commit.repo.cloneUrl, scmEvent.commit.sha, scmEvent.commit.creds));
         if (ciWorkflow) {
             this.fillLabels(ciWorkflow);
             this.fillCommitArgs(scmEvent, ciWorkflow);
             await this.addExitHandler(scm, scmEvent, ciWorkflow);
+            util.logger.info(JSON.stringify(ciWorkflow));
             const res = await this.crdKubeClient.ns['workflows'].post({ body: ciWorkflow });
             util.logger.info(`CI workflow ${res.metadata.namespace}/${res.metadata.name} had been created`);
             this.addCommitStatus(scm, scmEvent, {
@@ -90,7 +91,7 @@ export class CiProcessor {
         if (this.controllerInstanceId) {
             const labels = ciWorkflow.metadata.labels || {};
             labels['workflows.argoproj.io/controller-instanceid'] = this.controllerInstanceId;
-            ciWorkflow.metadata.labels = labels;
+//            ciWorkflow.metadata.labels = labels;
         }
     }
 
@@ -98,11 +99,21 @@ export class CiProcessor {
         if (ciWorkflow.spec.arguments && ciWorkflow.spec.arguments.parameters) {
             const revisionParam = ciWorkflow.spec.arguments.parameters.find(param => param.name === 'revision');
             const repoParam = ciWorkflow.spec.arguments.parameters.find(param => param.name === 'repo');
+            const branchParam = ciWorkflow.spec.arguments.parameters.find(param => param.name === 'branch');
             if (revisionParam) {
                 revisionParam.value = scmEvent.commit.sha;
             }
             if (repoParam) {
                 repoParam.value = scmEvent.commit.repo.cloneUrl;
+            }
+            if (branchParam) {
+                const s = scmEvent.commit.branch.split("/");
+                branchParam.value = s[s.length-1];
+            }
+            if (ciWorkflow.spec.imagePullSecrets) {
+                ciWorkflow.spec.imagePullSecrets = ciWorkflow.spec.push({ "name": "regsecret" });
+            } else {
+                ciWorkflow.spec.imagePullSecrets = [ { "name": "regsecret" } ]
             }
         }
     }
@@ -119,7 +130,7 @@ export class CiProcessor {
         return this.lock.acquire(key, () => action());
     }
 
-    private async ensureRepoInitialized(url: string) {
+    private async ensureRepoInitialized(url: string, creds: common.Credentials) {
         const repoPath = path.join(this.reposPath, url.replace(/\//g, '_'));
         if (!await util.fileExists(repoPath)) {
             await fs.mkdir(repoPath);
@@ -127,15 +138,16 @@ export class CiProcessor {
         try {
             await util.sh(`git status`, repoPath);
         } catch (e) {
-            await util.sh(`git init && git config core.sparseCheckout true && echo '.argo-ci/' > .git/info/sparse-checkout && git remote add origin '${url}'`, repoPath);
+            const urlWithCreds = url.replace('github', creds.username + ':' + creds.password + '@github');
+            await util.sh(`git init && git config core.sparseCheckout true && echo '.argo-ci/' > .git/info/sparse-checkout && git remote add origin '${urlWithCreds}'`, repoPath);
         }
         util.logger.info(`Updating repository '${url}'`);
         await util.sh('git fetch origin', repoPath);
         return repoPath;
     }
 
-    private async loadCiWorkflow(repoCloneUrl: string, tag: string): Promise<any> {
-        const repoPath = await this.ensureRepoInitialized(repoCloneUrl);
+    private async loadCiWorkflow(repoCloneUrl: string, tag: string, creds: common.Credentials): Promise<any> {
+        const repoPath = await this.ensureRepoInitialized(repoCloneUrl, creds);
         try {
             await util.sh(`git checkout ${tag}`, repoPath);
         } catch (e) {
